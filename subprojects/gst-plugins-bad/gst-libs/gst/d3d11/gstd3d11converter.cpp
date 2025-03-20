@@ -598,6 +598,7 @@ enum
   PROP_DEST_MASTERING_DISPLAY_INFO,
   PROP_DEST_CONTENT_LIGHT_LEVEL,
   PROP_VIDEO_DIRECTION,
+  PROP_BILINEAR_FILTERING,
 };
 
 struct _GstD3D11ConverterPrivate
@@ -705,6 +706,7 @@ struct _GstD3D11ConverterPrivate
   guint blend_sample_mask;
   gboolean fill_border;
   guint64 border_color;
+  boolean bilinear_filtering;
 };
 
 static void gst_d3d11_converter_set_property (GObject * object, guint prop_id,
@@ -785,6 +787,9 @@ gst_d3d11_converter_class_init (GstD3D11ConverterClass * klass)
       g_param_spec_boolean ("fill-border", "Fill border",
           "Fill border with \"border-color\" if destination rectangle does not "
           "fill the complete destination image", FALSE, param_flags));
+  g_object_class_install_property(object_class, PROP_BILINEAR_FILTERING,
+      g_param_spec_boolean("bilinear-filtering", "bilinear filtering",
+          "Use bilinear filtering on scaling", TRUE, param_flags));
   g_object_class_install_property (object_class, PROP_BORDER_COLOR,
       g_param_spec_uint64 ("border-color", "Border Color",
           "ARGB representation of the border color to use",
@@ -833,28 +838,33 @@ gst_d3d11_converter_dispose (GObject * object)
   GstD3D11Converter *self = GST_D3D11_CONVERTER (object);
   GstD3D11ConverterPrivate *priv = self->priv;
 
-  GST_D3D11_CLEAR_COM (priv->vertex_buffer);
-  GST_D3D11_CLEAR_COM (priv->index_buffer);
-  GST_D3D11_CLEAR_COM (priv->const_buffer);
-  GST_D3D11_CLEAR_COM (priv->vs);
-  GST_D3D11_CLEAR_COM (priv->layout);
-  GST_D3D11_CLEAR_COM (priv->linear_sampler);
-  GST_D3D11_CLEAR_COM (priv->gamma_dec_lut);
-  GST_D3D11_CLEAR_COM (priv->gamma_dec_srv);
-  GST_D3D11_CLEAR_COM (priv->gamma_enc_lut);
-  GST_D3D11_CLEAR_COM (priv->gamma_enc_srv);
-  GST_D3D11_CLEAR_COM (priv->video_device);
-  GST_D3D11_CLEAR_COM (priv->video_context2);
-  GST_D3D11_CLEAR_COM (priv->video_context);
-  GST_D3D11_CLEAR_COM (priv->enumerator);
-  GST_D3D11_CLEAR_COM (priv->processor);
-  GST_D3D11_CLEAR_COM (priv->blend);
+  {
+    GstD3D11DeviceLockGuard lk(self->device);
 
-  for (guint i = 0; i < CONVERTER_MAX_QUADS; i++)
-    GST_D3D11_CLEAR_COM (priv->ps[i]);
+    GST_D3D11_CLEAR_COM(priv->vertex_buffer);
+    GST_D3D11_CLEAR_COM(priv->index_buffer);
+    GST_D3D11_CLEAR_COM(priv->const_buffer);
+    GST_D3D11_CLEAR_COM(priv->vs);
+    GST_D3D11_CLEAR_COM(priv->layout);
+    GST_D3D11_CLEAR_COM(priv->linear_sampler);
+    GST_D3D11_CLEAR_COM(priv->gamma_dec_lut);
+    GST_D3D11_CLEAR_COM(priv->gamma_dec_srv);
+    GST_D3D11_CLEAR_COM(priv->gamma_enc_lut);
+    GST_D3D11_CLEAR_COM(priv->gamma_enc_srv);
+    GST_D3D11_CLEAR_COM(priv->video_device);
+    GST_D3D11_CLEAR_COM(priv->video_context2);
+    GST_D3D11_CLEAR_COM(priv->video_context);
+    GST_D3D11_CLEAR_COM(priv->enumerator);
+    GST_D3D11_CLEAR_COM(priv->processor);
+    GST_D3D11_CLEAR_COM(priv->blend);
 
-  gst_clear_buffer (&priv->fallback_inbuf);
-  gst_clear_buffer (&priv->piv_inbuf);
+    for (guint i = 0; i < CONVERTER_MAX_QUADS; i++)
+      GST_D3D11_CLEAR_COM(priv->ps[i]);
+
+    gst_clear_buffer(&priv->fallback_inbuf);
+    gst_clear_buffer(&priv->piv_inbuf);
+  }
+  
   gst_clear_object (&self->device);
 
   G_OBJECT_CLASS (parent_class)->dispose (object);
@@ -996,6 +1006,9 @@ gst_d3d11_converter_set_property (GObject * object, guint prop_id,
       }
       break;
     }
+    case PROP_BILINEAR_FILTERING:
+      priv->bilinear_filtering = g_value_get_boolean(value);
+      break;
     case PROP_BORDER_COLOR:{
       guint64 border_color = g_value_get_uint64 (value);
 
@@ -1096,6 +1109,9 @@ gst_d3d11_converter_get_property (GObject * object, guint prop_id,
       break;
     case PROP_FILL_BORDER:
       g_value_set_boolean (value, priv->fill_border);
+      break;
+    case PROP_BILINEAR_FILTERING:
+      g_value_set_boolean(value, priv->bilinear_filtering);
       break;
     case PROP_BORDER_COLOR:
       g_value_set_uint64 (value, priv->border_color);
@@ -1257,6 +1273,22 @@ get_vuya_component (GstVideoFormat format, gchar * y, gchar * u,
   }
 }
 
+// static D3D11_FILTER
+// gst_d3d11_color_convert_get_filtering(GstD3D11Converter* self)
+// {
+//   gboolean bilinear_filtering = TRUE;
+
+//   if (gst_structure_has_field(self->config, "bilinear-filtering")) {
+//     if (!gst_structure_get_boolean(self->config, "bilinear-filtering", &bilinear_filtering)) {
+//       bilinear_filtering = TRUE;
+//     }
+//   }
+
+//   return bilinear_filtering ? D3D11_FILTER_MIN_MAG_LINEAR_MIP_POINT :
+//     D3D11_FILTER_MIN_MAG_MIP_POINT;
+// }
+
+
 static gboolean
 gst_d3d11_color_convert_setup_shader (GstD3D11Converter * self,
     const GstVideoInfo * in_info, const GstVideoInfo * out_info)
@@ -1286,11 +1318,15 @@ gst_d3d11_color_convert_setup_shader (GstD3D11Converter * self,
   memset (input_desc, 0, sizeof (input_desc));
   memset (&buffer_desc, 0, sizeof (buffer_desc));
 
+  GstD3D11DeviceLockGuard lk(device);
   device_handle = gst_d3d11_device_get_device_handle (device);
   context_handle = gst_d3d11_device_get_device_context_handle (device);
 
-  /* bilinear filtering */
-  sampler_desc.Filter = D3D11_FILTER_MIN_MAG_LINEAR_MIP_POINT;
+  if (priv->bilinear_filtering) {
+    sampler_desc.Filter = D3D11_FILTER_MIN_MAG_LINEAR_MIP_POINT;
+  } else {
+    sampler_desc.Filter = D3D11_FILTER_MIN_MAG_MIP_POINT;
+  }
   sampler_desc.AddressU = D3D11_TEXTURE_ADDRESS_CLAMP;
   sampler_desc.AddressV = D3D11_TEXTURE_ADDRESS_CLAMP;
   sampler_desc.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
@@ -1387,7 +1423,6 @@ gst_d3d11_color_convert_setup_shader (GstD3D11Converter * self,
     return FALSE;
   }
 
-  GstD3D11DeviceLockGuard lk (device);
   hr = context_handle->Map (const_buffer.Get (), 0, D3D11_MAP_WRITE_DISCARD, 0,
       &map);
   if (!gst_d3d11_result (hr, device)) {
@@ -2970,7 +3005,7 @@ gst_d3d11_converter_setup_processor (GstD3D11Converter * self)
     GST_WARNING_OBJECT (self, "Unknown output DXGI colorspace");
     return FALSE;
   }
-
+  GstD3D11DeviceLockGuard lkd(self->device);
   video_device = gst_d3d11_device_get_video_device_handle (self->device);
   if (!video_device) {
     GST_DEBUG_OBJECT (self, "video device interface is not available");
@@ -3045,7 +3080,6 @@ gst_d3d11_converter_setup_processor (GstD3D11Converter * self)
     return FALSE;
   }
 
-  GstD3D11DeviceLockGuard lk (device);
   /* We don't want auto processing by driver */
   video_context1->VideoProcessorSetStreamAutoProcessingMode
       (processor.Get (), 0, FALSE);
@@ -3132,6 +3166,9 @@ gst_d3d11_converter_new (GstD3D11Device * device, const GstVideoInfo * in_info,
         (GstVideoPrimariesMode) value != GST_VIDEO_PRIMARIES_MODE_NONE) {
       allow_primaries = TRUE;
     }
+
+    gst_structure_get_boolean(config, GST_D3D11_CONVERTER_BILINEAR_FILTERING,
+      &priv->bilinear_filtering);
 
     gst_structure_free (config);
   }
