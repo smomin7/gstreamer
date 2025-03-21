@@ -391,7 +391,7 @@ void
 _priv_gst_debug_init (void)
 {
   const gchar *env;
-  FILE *log_file;
+  FILE *log_file = NULL;
 
   if (add_default_log_func) {
     env = g_getenv ("GST_DEBUG_FILE");
@@ -618,9 +618,8 @@ gst_debug_log_full_valist (GstDebugCategory * category, GstDebugLevel level,
   G_VA_COPY (message.arguments, args);
 
   handler = __log_functions;
-  while (handler) {
+  if (handler) {
     entry = handler->data;
-    handler = g_slist_next (handler);
     entry->func (category, level, file, function, line, object, &message,
         entry->user_data);
   }
@@ -1788,7 +1787,9 @@ gst_debug_remove_with_compare_func (GCompareFunc func, gpointer data)
 
     if (entry->notify)
       entry->notify (entry->user_data);
-
+    if ((entry->user_data != stderr) && (entry->user_data != stdout)) {
+      fclose (entry->user_data);
+    }
     g_slice_free (LogFuncEntry, entry);
     cleanup = g_slist_delete_link (cleanup, cleanup);
   }
