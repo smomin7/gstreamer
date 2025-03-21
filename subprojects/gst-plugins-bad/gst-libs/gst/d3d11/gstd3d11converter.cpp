@@ -706,7 +706,7 @@ struct _GstD3D11ConverterPrivate
   guint blend_sample_mask;
   gboolean fill_border;
   guint64 border_color;
-  boolean bilinear_filtering;
+  gboolean bilinear_filtering;
 };
 
 static void gst_d3d11_converter_set_property (GObject * object, guint prop_id,
