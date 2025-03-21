@@ -264,6 +264,12 @@ struct _GstAggregatorPadPrivate
   guint num_buffers;
   GstBuffer *peeked_buffer;
 
+  /* TRUE if the serialized query is in the proccess of handling at some
+   * exact moment. This will obligate the sinkpad streaming thread wait
+   * until the handling finishes.
+   * Always protected by the PAD_LOCK. */
+  gboolean query_in_proccess;
+
   /* used to track fill state of queues, only used with live-src and when
    * latency property is set to > 0 */
   GstClockTime head_position;
@@ -971,8 +977,10 @@ gst_aggregator_do_events_and_queries (GstElement * self, GstPad * epad,
         !GST_IS_BUFFER (g_queue_peek_tail (&pad->priv->data))) {
       if (GST_IS_EVENT (g_queue_peek_tail (&pad->priv->data)))
         event = gst_event_ref (g_queue_peek_tail (&pad->priv->data));
-      if (GST_IS_QUERY (g_queue_peek_tail (&pad->priv->data)))
+      if (GST_IS_QUERY (g_queue_peek_tail (&pad->priv->data))) {
         query = g_queue_peek_tail (&pad->priv->data);
+        pad->priv->query_in_proccess = TRUE;
+      }
     }
     PAD_UNLOCK (pad);
     if (event || query) {
@@ -1007,6 +1015,8 @@ gst_aggregator_do_events_and_queries (GstElement * self, GstPad * epad,
               NULL);
           g_queue_pop_tail (&pad->priv->data);
         }
+
+        pad->priv->query_in_proccess = FALSE;
       }
 
       PAD_BROADCAST_EVENT (pad);
@@ -1716,6 +1726,9 @@ gst_aggregator_default_sink_event (GstAggregator * self,
         SRC_LOCK (self);
         priv->send_eos = TRUE;
         priv->got_eos_event = FALSE;
+        if (self->priv->start_time_selection ==
+            GST_AGGREGATOR_START_TIME_SELECTION_FIRST)
+          priv->first_buffer = TRUE;
         SRC_BROADCAST (self);
         SRC_UNLOCK (self);
 
@@ -2635,9 +2648,14 @@ gst_aggregator_default_sink_query_pre_queue (GstAggregator * self,
     SRC_BROADCAST (self);
     SRC_UNLOCK (self);
 
-    while (!gst_aggregator_pad_queue_is_empty (aggpad)
-        && aggpad->priv->flow_return == GST_FLOW_OK) {
-      GST_DEBUG_OBJECT (aggpad, "Waiting for buffer to be consumed");
+    /* Sanity check: aggregator's sink pad can only proccess one serialized
+     * query at a time. */
+    g_warn_if_fail (!aggpad->priv->query_in_proccess);
+
+    while ((!gst_aggregator_pad_queue_is_empty (aggpad)
+            && aggpad->priv->flow_return == GST_FLOW_OK) ||
+        aggpad->priv->query_in_proccess) {
+      GST_DEBUG_OBJECT (aggpad, "Waiting for query to be consumed");
       PAD_WAIT_EVENT (aggpad);
     }
 
@@ -3122,6 +3140,7 @@ gst_aggregator_pad_chain_internal (GstAggregator * self,
 {
   GstFlowReturn flow_return;
   GstClockTime buf_pts;
+  GstClockTime buf_duration;
 
   GST_TRACE_OBJECT (aggpad,
       "entering chain internal with %" GST_PTR_FORMAT, buffer);
@@ -3134,7 +3153,7 @@ gst_aggregator_pad_chain_internal (GstAggregator * self,
   PAD_UNLOCK (aggpad);
 
   buf_pts = GST_BUFFER_PTS (buffer);
-
+  buf_duration = GST_BUFFER_DURATION (buffer);
   for (;;) {
     SRC_LOCK (self);
     GST_OBJECT_LOCK (self);
@@ -3187,20 +3206,26 @@ gst_aggregator_pad_chain_internal (GstAggregator * self,
         break;
       case GST_AGGREGATOR_START_TIME_SELECTION_FIRST:
         GST_OBJECT_LOCK (aggpad);
-        if (aggpad->priv->head_segment.format == GST_FORMAT_TIME) {
-          start_time = buf_pts;
-          if (start_time != -1) {
-            start_time = MAX (start_time, aggpad->priv->head_segment.start);
-            start_time =
-                gst_segment_to_running_time (&aggpad->priv->head_segment,
-                GST_FORMAT_TIME, start_time);
-          }
-        } else {
-          start_time = 0;
+        if (aggpad->priv->head_segment.format != GST_FORMAT_TIME) {
+          gst_segment_init (&aggpad->priv->head_segment, GST_FORMAT_TIME);
+          gst_segment_do_seek (&aggpad->priv->head_segment, 1.0, GST_FORMAT_TIME,
+            GST_SEEK_FLAG_ACCURATE, GST_SEEK_TYPE_SET, buf_pts,
+            GST_SEEK_TYPE_SET, GST_CLOCK_TIME_NONE, NULL);
           GST_WARNING_OBJECT (aggpad,
-              "Ignoring request of selecting the first start time "
-              "as the segment is a %s segment instead of a time segment",
-              gst_format_get_name (aggpad->priv->head_segment.format));
+            "No valid segment received before the first buffer. Assuming a segment "
+            "from the buffer pts: %" GST_SEGMENT_FORMAT, &aggpad->priv->head_segment);
+        }
+
+        start_time = buf_pts;
+        if (start_time != -1) {
+          //GstClockTime buf_duration = GST_BUFFER_DURATION (buffer);
+          if (aggpad->priv->head_segment.rate < 0.0 && buf_duration != -1) {
+            start_time += buf_duration;
+          }
+          start_time = MAX(start_time, aggpad->priv->head_segment.start);
+          start_time =
+            gst_segment_to_running_time(&aggpad->priv->head_segment,
+              GST_FORMAT_TIME, start_time);
         }
         GST_OBJECT_UNLOCK (aggpad);
         break;
