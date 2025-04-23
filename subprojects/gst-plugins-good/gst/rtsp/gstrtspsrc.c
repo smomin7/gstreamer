@@ -1186,7 +1186,7 @@ gst_rtspsrc_class_init (GstRTSPSrcClass * klass)
    *
    * Only applicable for RTSP over TCP or HTTP.
    *
-   * Since: 1.24.10
+   * Since: 1.26
    */
   g_object_class_install_property (gobject_class,
       PROP_TCP_TIMESTAMP,
@@ -1510,7 +1510,7 @@ gst_rtspsrc_class_init (GstRTSPSrcClass * klass)
    *
    * The #GstPromise reply consists in the following fields:
    *
-   * * 'rtsp-result': set to 0 if the HTTP request could be processed.
+   * * 'rtsp-result': set to 0 if the HTTP request could be processed. 
    * * 'rtsp-code': the HTTP status code returned by the server.
    * * 'rtsp-reason': a human-readable version of the HTTP status code.
    *
@@ -1537,7 +1537,7 @@ gst_rtspsrc_class_init (GstRTSPSrcClass * klass)
    *
    * The #GstPromise reply consists in the following fields:
    *
-   * * 'rtsp-result': set to 0 if the HTTP request could be processed.
+   * * 'rtsp-result': set to 0 if the HTTP request could be processed. 
    * * 'rtsp-code': the HTTP status code returned by the server.
    * * 'rtsp-reason': a human-readable version of the HTTP status code.
    *
